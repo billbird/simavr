@@ -48,6 +48,10 @@ display_usage(
 			"       [-ff <.hex file>]   Load next .hex file as flash\n"
 			"       [-ee <.hex file>]   Load next .hex file as eeprom\n"
 			"       [--input|-i <file>] A .vcd file to use as input signals\n"
+			"       [--dump-vitals <file>]  Dump memory and cycle count to <file> on exit\n"
+			"       [--max-cycles <n>]  Run for at most <n> cycles\n"
+			"       [--max-instructions <n>]  Execute at most <n> instructions\n"
+			"       [--exit-on-infinite]  End simulation when a vacuous infinite loop is reached\n"
 			"       [-v]                Raise verbosity level\n"
 			"                           (can be passed more than once)\n"
 			"       <firmware>          A .hex or an ELF file. ELF files are\n"
@@ -95,6 +99,11 @@ main(
 	int trace_vectors[8] = {0};
 	int trace_vectors_count = 0;
 	const char *vcd_input = NULL;
+	
+	const char* dump_vitals_filename = NULL;
+	unsigned long long int max_cycles = 0;
+	unsigned long long int max_instructions = 0;
+	int exit_on_infinite_loop = 0;
 
 	if (argc == 1)
 		display_usage(basename(argv[0]));
@@ -132,6 +141,23 @@ main(
 			loadBase = AVR_SEGMENT_OFFSET_EEPROM;
 		} else if (!strcmp(argv[pi], "-ff")) {
 			loadBase = AVR_SEGMENT_OFFSET_FLASH;
+		} else if (!strcmp(argv[pi], "--dump-vitals")){
+			if (pi < argc - 1)
+				dump_vitals_filename = argv[++pi];
+			else
+				display_usage(basename(argv[0]));
+		} else if (!strcmp(argv[pi], "--max-cycles")){
+			if (pi < argc - 1)
+				max_cycles = atoll(argv[++pi]);
+			else
+				display_usage(basename(argv[0]));
+		} else if (!strcmp(argv[pi], "--max-instructions")){
+			if (pi < argc - 1)
+				max_instructions = atoll(argv[++pi]);
+			else
+				display_usage(basename(argv[0]));
+		} else if (!strcmp(argv[pi], "--exit-on-infinite")){
+			exit_on_infinite_loop = 1;
 		} else if (argv[pi][0] != '-') {
 			char * filename = argv[pi];
 			char * suffix = strrchr(filename, '.');
@@ -212,10 +238,59 @@ main(
 	signal(SIGINT, sig_int);
 	signal(SIGTERM, sig_int);
 
+	unsigned long long int instruction_count = 0;
+	int found_infinite_loop = 0;
 	for (;;) {
+		int old_pc = avr->pc;
 		int state = avr_run(avr);
+		instruction_count++;
+		//If the --exit-on-infinite option was specified, terminate the simulation
+		//if an rjmp-to-self instruction is encountered with interrupts disabled.
+		if ( exit_on_infinite_loop && old_pc == avr->pc && !avr->sreg[S_I] ){
+			found_infinite_loop = 1;
+			state = cpu_Done;
+		}
+		//If the maximum number of cycles has been reached, terminate the simulation
+		if (max_cycles && avr->cycle >= max_cycles){
+			state = cpu_Done;
+		}
+		//If the maximum number of instructions has been reached, terminate the simulation
+		if (max_instructions && instruction_count >= max_instructions){
+			state = cpu_Done;
+		}
+		
 		if (state == cpu_Done || state == cpu_Crashed)
 			break;
+	}
+	
+	if (dump_vitals_filename){
+		FILE* dump_vitals_file = NULL;
+		if (!strcmp(dump_vitals_filename,"-")){
+			dump_vitals_file = stdout;
+		}else{
+			dump_vitals_file = fopen(dump_vitals_filename,"w");
+		}
+		
+		fprintf(dump_vitals_file, "Cycle Count: %llu\n", (unsigned long long int)avr->cycle);
+		fprintf(dump_vitals_file, "Instruction Count: %llu\n", instruction_count);
+		fprintf(dump_vitals_file, "PC = 0x%08x\n",avr->pc);
+		if (found_infinite_loop && exit_on_infinite_loop){
+			fprintf(dump_vitals_file, "Infinite loop detected.\n");
+		}
+		
+		//TODO programmatically find the size of data memory (0x2200 is only valid for the mega 2560)
+		int i;
+		fprintf(dump_vitals_file, "CONTENTS OF DATA MEMORY: ");
+		for (i = 0; i < 0x2200; i++){
+			fprintf(dump_vitals_file, "%02x ",(unsigned char)avr->data[i]);
+		}
+		fprintf(dump_vitals_file, "\n");
+		
+		if (!strcmp(dump_vitals_filename,"-")){
+		
+		}else{
+			fclose(dump_vitals_file);
+		}
 	}
 
 	avr_terminate(avr);
