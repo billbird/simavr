@@ -245,7 +245,7 @@ main(
 		int state = avr_run(avr);
 		instruction_count++;
 		//If the --exit-on-infinite option was specified, terminate the simulation
-		//if an rjmp-to-self instruction is encountered with interrupts disabled.
+		//if a jump-to-self instruction is encountered with interrupts disabled.
 		if ( exit_on_infinite_loop && old_pc == avr->pc && !avr->sreg[S_I] ){
 			found_infinite_loop = 1;
 			state = cpu_Done;
@@ -277,6 +277,11 @@ main(
 		if (found_infinite_loop && exit_on_infinite_loop){
 			fprintf(dump_vitals_file, "Infinite loop detected.\n");
 		}
+		
+		//The avr->data array contains everything in data memory except the value of SREG, which is stored
+		//separately. (Hooks in the load and store functions catch the cases where SREG is treated like a memory value).
+		//This macro reassembles the SREG value into the appropriate memory location.
+		READ_SREG_INTO(avr, avr->data[R_SREG]);
 		
 		//TODO programmatically find the size of data memory (0x2200 is only valid for the mega 2560)
 		int i;
